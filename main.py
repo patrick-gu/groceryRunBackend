@@ -1,15 +1,16 @@
-from os import unlink
-import os
 import requests
 import re
 import json
-import openai
 from fastapi import Request, FastAPI, Body
-#from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import cloudscraper
 
 app = FastAPI()
+
+class Sieve(BaseModel):
+    storesList: list
+    shoppingList: list
 
 origins = ["*"]
 
@@ -47,6 +48,14 @@ class Item:
     self.price = price
     self.img = img
 
+class FinalItem:
+  def __init__(self, name, store, price, img, unitprice):
+    self.name = name
+    self.store = store
+    self.price = price
+    self.img = img
+    self.unitprice = unitprice
+
 def levenshtein_distance(s, t):
     m, n = len(s), len(t)
     if m < n:
@@ -73,6 +82,33 @@ def get_ddg_cookies(url):
     return r.cookies.get_dict()['__ddg2']
 
 
+def getStores():
+  f = open('data.json')
+  data = json.load(f)
+  return list(data.keys())
+
+def searchDefaultItems(query):
+  f = open('defaultItems.json')
+  data = json.load(f)
+  choice=None
+  for item in data:
+    if compute_similarity(query.lower(),item['name'].lower()) > 0.6 or query.lower() in item['name'].lower():
+        choice = FinalItem(item['name']+" "+item['desc'],None,item['price'],item['img'],str(item['pricePerUnit'])+' / '+ str(item['unitQuantity']) + str(item['unit']))
+        break
+  return choice   
+
+def searchSaleData(query):
+  f = open('data.json')
+  data = json.load(f)
+  itemsByStore = {}
+  for key in data.keys():
+    items=[]
+    for item in data[key]:
+      if compute_similarity(query.lower(),item['name'].lower()) > 0.6 or query.lower() in item['name'].lower():
+        items.append(item)
+    if (len(items)>0):
+      itemsByStore[key]=items
+  return itemsByStore
 
 def getSaleItems(postalCode):
   scraper = cloudscraper.create_scraper()
@@ -89,29 +125,154 @@ def getSaleItems(postalCode):
   itemsByStore = {}
   stores = set()
   for store in groceryStores:
-    url = f"https://cdn-gateflipp.flippback.com/bf/flipp/flyers/{store.id}?locale=en-ca&sid=9874069328040511"
-    cookie = get_ddg_cookies(url)
-    scraper.cookies.set(cookie,cookie,domain=url)
-    webpage = scraper.get(url).json()
-    items=[]
-    for item in webpage["items"]:
-      if (item["name"] and item["price"]):
-        itemName = item["name"].replace('\n','')
-        entry = Item(itemName,item["brand"],store.name,store.id,item["price"],item["cutout_image_url"])
-        items.append(entry)
-        stores.add(store.name)
-    if(store.name in stores):
-      itemsByStore[store.name]=items
+    if (store.name=='Walmart' or store.name=='Metro' or store.name=='Food Basics' or  store.name=='No Frills' or  store.name=='Sobeys' or store.name=='Real Canadian Superstore' or store.name=='Loblaws' or store.name=='T&T Supermarket' or store.name=='Costco' or store.name=='FreshCo'):
+      url = f"https://cdn-gateflipp.flippback.com/bf/flipp/flyers/{store.id}?locale=en-ca&sid=9874069328040511"
+      cookie = get_ddg_cookies(url)
+      scraper.cookies.set(cookie,cookie,domain=url)
+      webpage = scraper.get(url).json()
+      items=[]
+      for item in webpage["items"]:
+        if (item["name"] and item["price"]):
+          itemName = item["name"].replace('\n','')
+          entry = Item(itemName,item["brand"],store.name,store.id,item["price"],item["cutout_image_url"])
+          items.append(entry)
+          stores.add(store.name)
+      if(store.name in stores):
+        itemsByStore[store.name]=items
   return itemsByStore
       
-
-
-
 @app.get("/")
 async def root():
     return {"message": "Hello World"}
+
+@app.get("/searchDefaultItems/{query}")
+async def flipp(query: str):
+    return searchDefaultItems(query)
 
 
 @app.get("/flipp/{postalCode}")
 async def flipp(postalCode: str):
     return getSaleItems(postalCode)
+
+@app.get("/getItems/{query}")
+async def flipp(query: str):
+    return searchSaleData(query)
+
+@app.post("/filter/")
+async def flipp(sieve: Sieve):
+    f = open('data.json')
+    data = json.load(f)
+    categorizeByItem = {}
+    for item in sieve.shoppingList:
+       categorizeByItem[item] = []
+    for key in data.keys():
+      for item in data[key]:
+        for shoppingListItem in sieve.shoppingList:
+          if compute_similarity(shoppingListItem.lower(),item['name'].lower()) > 0.6 or shoppingListItem.lower() in item['name'].lower():
+            if item['store'] in sieve.storesList:
+              categorizeByItem[shoppingListItem] = categorizeByItem[shoppingListItem]+[item]
+    totalcost=0
+    bestShoppingList={}
+    for key in categorizeByItem.keys():
+      itemCost=1e9
+      item=None
+      for choice in categorizeByItem[key]:
+        try:
+          if float(choice['price'])<itemCost:
+            itemCost=float(choice['price'])
+            item=choice
+        except:
+           0==0
+      if (item!=None):
+        newItem=FinalItem(item['name'],item['store'],item['price'],item['img'],None)
+        bestShoppingList[key]=newItem
+        totalcost+=float(item['price'])
+      else:
+        defaultItem=searchDefaultItems(key)
+        if defaultItem!=None:
+          bestShoppingList[key]=defaultItem
+          totalcost+=float(defaultItem.price)
+      
+    return bestShoppingList,{"cost": str(round(totalcost, 2))}
+
+
+
+class WalmartItem:
+  def __init__(self,name,desc,price,img,pricePerUnit,unit,unitQuantity):
+    self.name=name
+    self.desc=desc
+    self.price=price
+    self.img=img
+    self.pricePerUnit = pricePerUnit
+    self.unit = unit
+    self.unitQuantity = unitQuantity
+
+  def display(self):
+    print(self.name)
+    print(self.desc)
+    print(self.price)
+    print(self.pricePerUnit,'/',self.unitQuantity,self.unit)
+    print(self.img)
+
+def searchItem(query,postalCode,storeId):
+  scraper = cloudscraper.create_scraper()
+  url = f"https://www.walmart.ca/search?q={query}&c=10019"
+  #cookie = get_ddg_cookies(url)
+  #session.cookies.set(cookie,cookie,domain=url)
+  webpage = scraper.get(url).text
+  rawOptions = re.findall("""<p data-automation=name class="css-1p4va6y eudvd6x0">(.+?)</p>""",webpage)
+  rawSubtext = re.findall("""<p data-automation=description class="css-1m0dajq eudvd6x0">(.+?)</p>""",webpage)
+  skuId = re.findall("""<div data-automation=quantity-atc-panel-(.+?) class="e1m8uw919 css-fgci5x e1nah0ad2">""",webpage)
+  id = re.findall("""div data-automation=grocery-product data-product-id=(.+?) class="css-1d0izcz e1m8uw9118""",webpage)
+  img = re.findall('src="(.+?)" data-automation=image class="css-19q6667 e175iya62"',webpage)
+  products = []
+  for i in range(len(id)):
+    entry = {}
+    entry["productId"]=id[i]
+    skuIds = [skuId[i]]
+    entry["skuIds"] = skuIds
+    products.append(entry)
+
+  data = {
+  "fsa":postalCode[0:3],
+  "products":products,     
+  "lang":"en",
+  "pricingStoreId":str(storeId),
+  "fulfillmentStoreId":str(storeId),
+  "experience":"grocery"
+}
+  jsonData = json.dumps(data)
+  cookie = get_ddg_cookies("https://www.walmart.ca/api/bsp/v2/price-offer")
+  scraper.cookies.set(cookie,cookie,domain="https://www.walmart.ca/api/bsp/v2/price-offer")
+  content = scraper.post(
+        "https://www.walmart.ca/api/bsp/v2/price-offer",
+        data=jsonData,
+        headers={"Referer": url}
+        )
+  itemData = json.loads(content.content.decode())
+  items=[]
+  counter=0
+  for product in products:
+    entry = itemData["offers"][product["skuIds"][0]]
+    price = entry["currentPrice"]
+    if "pricePerUnit" in entry and "priceCompQty" in entry and "priceCompUomCd" in entry:
+      pricePerUnit = entry["pricePerUnit"]
+      unit = entry["priceCompUomCd"]
+      unitQuantity = entry["priceCompQty"]
+      newItem = WalmartItem(rawOptions[counter],rawSubtext[counter],price,img[counter],pricePerUnit,unit,unitQuantity)
+      items.append(newItem)
+      newItem.display()
+    else:
+      newItem = WalmartItem(rawOptions[counter],rawSubtext[counter],price,img[counter],None,None,None)
+      items.append(newItem)
+      newItem.display()
+    counter+=1
+
+  return items
+
+
+
+@app.get("/getWalmartItems/{query}")
+async def flipp(query: str):
+    return searchItem(query,"M1B5J5",3111)
+
