@@ -5,7 +5,7 @@ import re
 import json
 import openai
 from fastapi import Request, FastAPI, Body
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 import cloudscraper
 
@@ -22,13 +22,30 @@ app.add_middleware(
 )
 
 
-load_dotenv()
+#load_dotenv()
 
+
+#GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+#OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+#openai.api_key=OPENAI_API_KEY
 
 session = requests.session()
 my_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36'}
 session.headers.update(my_headers)
 
+class Store:
+  def __init__(self, name, id):
+    self.name = name
+    self.id = id
+
+class Item:
+  def __init__(self, name, brand, store, storeId, price, img):
+    self.name = name
+    self.brand = brand
+    self.store = store
+    self.storeId = storeId
+    self.price = price
+    self.img = img
 
 def levenshtein_distance(s, t):
     m, n = len(s), len(t)
@@ -57,7 +74,7 @@ def get_ddg_cookies(url):
 
 
 
-def getFlippPage(postalCode):
+def getSaleItems(postalCode):
   scraper = cloudscraper.create_scraper()
   groceryStores=[]
   url = f"https://cdn-gateflipp.flippback.com/bf/flipp/data?locale=en-ca&postal_code={postalCode}&sid=9565209900140639"
@@ -68,7 +85,24 @@ def getFlippPage(postalCode):
     if "Groceries" in store["categories"]:
       entry = Store(store["merchant"],store["id"])
       groceryStores.append(entry)
-  return groceryStores
+
+  itemsByStore = {}
+  stores = set()
+  for store in groceryStores:
+    url = f"https://cdn-gateflipp.flippback.com/bf/flipp/flyers/{store.id}?locale=en-ca&sid=9874069328040511"
+    cookie = get_ddg_cookies(url)
+    scraper.cookies.set(cookie,cookie,domain=url)
+    webpage = scraper.get(url).json()
+    items=[]
+    for item in webpage["items"]:
+      if (item["name"] and item["price"]):
+        itemName = item["name"].replace('\n','')
+        entry = Item(itemName,item["brand"],store.name,store.id,item["price"],item["cutout_image_url"])
+        items.append(entry)
+        stores.add(store.name)
+    if(store.name in stores):
+      itemsByStore[store.name]=items
+  return itemsByStore
       
 
 
@@ -81,8 +115,3 @@ async def root():
 @app.get("/flipp/{postalCode}")
 async def flipp(postalCode: str):
     return getSaleItems(postalCode)
-
-   
-
-
-
